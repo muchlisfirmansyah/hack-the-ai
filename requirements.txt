@@ -1,2 +1,4 @@
 fastmcp
 pandas
+uvicorn 
+pydantic

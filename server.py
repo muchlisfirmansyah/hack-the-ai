@@ -249,19 +249,14 @@ def get_product_mix(
 
 
 if __name__ == "__main__":
-    # Ini adalah cara yang direkomendasikan untuk menjalankan FastMCP di mode HTTP.
-    # Secara internal, FastMCP akan menjalankan server FastAPI/Uvicorn yang mendukung streaming.
-    # Anda harus menjalankan ini melalui perintah CLI yang benar:
-    # fastmcp run server.py:mcp --transport http --port 8000
+    # Ubah atau verifikasi mcp.run() di dalam FastMCP
+    # Jika FastMCP tidak mengambil PORT secara otomatis, Anda perlu:
+    import os
+    port = int(os.environ.get("PORT", 8000)) # Dapatkan PORT dari lingkungan
     
-    # Jika Anda ingin tetap menggunakan 'python server.py', Anda perlu menjalankan Uvicorn
-    # menggunakan FastMCP CLI untuk memastikan semua dependensi terkelola dengan baik.
+    # ... pastikan FastMCP bisa diinstruksikan untuk menggunakan port ini
+    # Karena mcp.run() adalah wrapper, gunakan perintah CLI di atas (Solusi A)
+    # untuk kepastian, karena FastMCP didasarkan pada FastAPI/Uvicorn yang sangat mengandalkan CLI.
     
-    # KARENA ANDA MENGALAMI KESALAHAN PADA python server.py, gunakan perintah CLI:
-    print("MENGGUNAKAN PERINTAH CLI YANG DIREKOMENDASIKAN UNTUK STREAMING HTTP:")
-    print("Jalankan perintah ini di Terminal Anda:")
-    print("\n\tfastmcp run server.py:mcp --transport http --port 8000\n")
-    
-    # Jika Anda ingin tetap menjalankan 'python server.py', gunakan mcp.run()
-    # dan pastikan Anda menginstal CLI FastMCP.
-    mcp.run()
+    # Jaga mcp.run() apa adanya, tapi gunakan Solusi A sebagai perintah start.
+    mcp.run() # Akan menjalankan server (default port 8000 jika dijalankan lokal)
