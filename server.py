@@ -4,8 +4,10 @@ from fastmcp import FastMCP, Context
 import json
 from pathlib import Path
 from datetime import datetime
+# HAPUS: import starlette.responses dan uvicorn
 
 mcp = FastMCP(name="PaymentsAnalyticsServer")
+# PASTIKAN FILE JSON BERADA DI FOLDER YANG SAMA
 DATA_PATH = Path(__file__).parent / "mcp_training_data.json"
 
 # ---- tiny cache ----
@@ -26,30 +28,30 @@ def _ensure_yyyy_mm(month: str) -> None:
         raise ValueError("month must be in YYYY-MM format, e.g. 2025-07") from e
 
 
+# --- Fungsi Pembantu Filter Umum (untuk TPV/TPT Overall) ---
 def _filter_rows(
     month: Optional[str] = None,
     product: Optional[str] = None,
-    # Ganti 'clientid' menjadi 'brand_id'
     brand_id: Optional[str] = None, 
 ) -> List[Dict[str, Any]]:
     rows = _load_data()
     if month:
         _ensure_yyyy_mm(month)
-        # Gunakan kolom 'month' yang sudah berformat YYYY-MM
-        rows = [r for r in rows if str(r.get("month", "")).startswith(month)]
+        # KRITIS: Menggunakan perbandingan langsung (==) untuk filter yang akurat
+        rows = [r for r in rows if str(r.get("month", "")) == month]
     if product:
         rows = [r for r in rows if r.get("product") == product]
     if brand_id:
-        # Gunakan kolom 'brand_id'
         rows = [r for r in rows if str(r.get("brand_id")) == brand_id]
         
     return rows
 
+# --- Fungsi Pembantu Filter Berdasarkan Tipe (untuk Profit/Churn) ---
 def _filter_rows_by_type(
     data_type: Literal["churn", "profit"],
     month: Optional[str] = None,
     product: Optional[str] = None,
-    brand_id: Optional[str] = None, # Ganti clientid menjadi brand_id
+    brand_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     rows = _load_data()
     # Filter berdasarkan tipe
@@ -57,12 +59,11 @@ def _filter_rows_by_type(
     
     if month:
         _ensure_yyyy_mm(month)
-        # Asumsi 'month' di data Anda sudah berformat 'YYYY-MM'
+        # KRITIS: Menggunakan perbandingan langsung (==) untuk filter yang akurat
         rows = [r for r in rows if r.get("month") == month] 
     if product:
         rows = [r for r in rows if r.get("product") == product]
     if brand_id:
-        # Ganti 'clientid' dengan 'brand_id'
         rows = [r for r in rows if str(r.get("brand_id")) == brand_id]
         
     return rows
@@ -71,9 +72,6 @@ def _filter_rows_by_type(
 # =========================
 # Resource: get_data_product_monthly
 # =========================
-# URI Template rules:
-# - {month}   → required path param (YYYY-MM)
-# - {?product}→ optional query param
 @mcp.resource("sales://data/{month}{?product}", description="List monthly rows, optionally filtered by product.")
 def get_data_product_monthly(month: str, product: Optional[str] = None) -> Dict[str, Any]:
     rows = _filter_rows(month=month, product=product)
@@ -84,70 +82,6 @@ def get_data_product_monthly(month: str, product: Optional[str] = None) -> Dict[
         "count": len(rows),
         "rows": rows,
     }
-
-
-# # =========================
-# # Tool: calculate_tpv_total (sum amount per client)
-# # =========================
-# # Ganti nama parameter dari clientid menjadi brand_id
-# @mcp.tool(
-#     "calculate_tpv_total", 
-#     description="Menghitung total TPV (Total Payment Volume) per brand_id; filters: month, product, brand_id"
-# )
-# def calculate_tpv_total(
-#     month: Optional[str] = None,
-#     product: Optional[str] = None,
-#     brand_id: Optional[str] = None, # Perubahan di sini
-# ) -> Dict[str, Any]:
-#     # Panggil fungsi filter yang sudah diubah
-#     rows = _filter_rows(month=month, product=product, brand_id=brand_id)
-#     per_client: Dict[str, int] = {}
-#     for r in rows:
-#         # Gunakan 'brand_id' dan kolom 'tpv'
-#         bid = str(r["brand_id"])
-#         # Asumsi 'tpv' sudah integer dari proses JSON sebelumnya
-#         per_client[bid] = per_client.get(bid, 0) + int(r.get("tpv", 0))
-        
-#     grand_total = sum(per_client.values())
-#     return {
-#         "metric": "TPV",
-#         # Perubahan di sini
-#         "filters": {"month": month, "product": product, "brand_id": brand_id},
-#         "per_client": per_client,
-#         "grand_total": grand_total,
-#     }
-
-
-# # =========================
-# # Tool: calculate_tpt_total (count rows per client)
-# # =========================
-# # Ganti nama parameter dari clientid menjadi brand_id
-# @mcp.tool(
-#     "calculate_tpt_total", 
-#     description="Menghitung total TPT (Total Payment Transaction/Count) per brand_id; filters: month, product, brand_id"
-# )
-# def calculate_tpt_total(
-#     month: Optional[str] = None,
-#     product: Optional[str] = None,
-#     brand_id: Optional[str] = None, # Perubahan di sini
-# ) -> Dict[str, Any]:
-#     # Panggil fungsi filter yang sudah diubah
-#     rows = _filter_rows(month=month, product=product, brand_id=brand_id)
-#     per_client: Dict[str, int] = {}
-#     for r in rows:
-#         # Gunakan 'brand_id' dan kolom 'tpt'
-#         bid = str(r["brand_id"])
-#         # Asumsi 'tpt' sudah integer dari proses JSON sebelumnya
-#         per_client[bid] = per_client.get(bid, 0) + int(r.get("tpt", 0))
-        
-#     grand_total = sum(per_client.values())
-#     return {
-#         "metric": "TPT",
-#         # Perubahan di sini
-#         "filters": {"month": month, "product": product, "brand_id": brand_id},
-#         "per_client": per_client,
-#         "grand_total": grand_total,
-#     }
 
 # =========================
 # Tool: get_churn_candidates (mengidentifikasi merchant churn/potensi churn)
@@ -160,12 +94,9 @@ def get_churn_candidates(
     month: Optional[str] = None,
     product: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # Mengambil semua baris dengan type: churn
     rows = _filter_rows_by_type(data_type="churn", month=month, product=product)
     
-    # Ambil daftar unik brand_id
     churn_brand_ids = sorted(list(set(r["brand_id"] for r in rows if "brand_id" in r)))
-    
     total_candidates = len(churn_brand_ids)
     
     return {
@@ -188,14 +119,11 @@ def calculate_profit_total(
     product: Optional[str] = None,
     brand_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # Mengambil semua baris dengan type: profit
     rows = _filter_rows_by_type(data_type="profit", month=month, product=product, brand_id=brand_id)
     
     per_client: Dict[str, int] = {}
     for r in rows:
-        # Gunakan 'brand_id' dari data training
         bid = str(r["brand_id"])  
-        # Asumsi 'tpv' adalah metrik profit
         per_client[bid] = per_client.get(bid, 0) + int(r.get("tpv", 0)) 
         
     grand_total = sum(per_client.values())
@@ -220,7 +148,6 @@ def calculate_overall_metrics(
     product: Optional[str] = None,
     brand_id: Optional[str] = None, 
 ) -> Dict[str, Any]:
-    # Menggunakan filter rows standar (tanpa filter type)
     rows = _filter_rows(month=month, product=product, brand_id=brand_id)
     
     total_tpt = sum(int(r.get("tpt", 0)) for r in rows)
@@ -247,21 +174,17 @@ def get_monthly_change(
     product: Optional[str] = None,
     brand_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # Pastikan format bulan benar
     _ensure_yyyy_mm(month_a)
     _ensure_yyyy_mm(month_b)
 
-    # Dapatkan data untuk Bulan A
     rows_a = _filter_rows(month=month_a, product=product, brand_id=brand_id)
     tpt_a = sum(int(r.get("tpt", 0)) for r in rows_a)
     tpv_a = sum(int(r.get("tpv", 0)) for r in rows_a)
 
-    # Dapatkan data untuk Bulan B
     rows_b = _filter_rows(month=month_b, product=product, brand_id=brand_id)
     tpt_b = sum(int(r.get("tpt", 0)) for r in rows_b)
     tpv_b = sum(int(r.get("tpv", 0)) for r in rows_b)
 
-    # Hitung Perubahan Persentase
     tpt_change_pct = ((tpt_b - tpt_a) / tpt_a * 100) if tpt_a else 0
     tpv_change_pct = ((tpv_b - tpv_a) / tpv_a * 100) if tpv_a else 0
 
@@ -285,7 +208,6 @@ def get_monthly_change(
 def get_product_mix(
     month: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # Gunakan filter rows standar
     rows = _filter_rows(month=month)
     
     total_tpt = sum(int(r.get("tpt", 0)) for r in rows)
@@ -325,11 +247,21 @@ def get_product_mix(
         "mix_by_product": mix_results
     }
 
-# =========================
-# Optional: meta resource (for debugging)
-# =========================
 
 if __name__ == "__main__":
-    # Run over stdio (default). To run HTTP:
-    #   fastmcp run server.py:mcp --transport http --port 8000
+    # Ini adalah cara yang direkomendasikan untuk menjalankan FastMCP di mode HTTP.
+    # Secara internal, FastMCP akan menjalankan server FastAPI/Uvicorn yang mendukung streaming.
+    # Anda harus menjalankan ini melalui perintah CLI yang benar:
+    # fastmcp run server.py:mcp --transport http --port 8000
+    
+    # Jika Anda ingin tetap menggunakan 'python server.py', Anda perlu menjalankan Uvicorn
+    # menggunakan FastMCP CLI untuk memastikan semua dependensi terkelola dengan baik.
+    
+    # KARENA ANDA MENGALAMI KESALAHAN PADA python server.py, gunakan perintah CLI:
+    print("MENGGUNAKAN PERINTAH CLI YANG DIREKOMENDASIKAN UNTUK STREAMING HTTP:")
+    print("Jalankan perintah ini di Terminal Anda:")
+    print("\n\tfastmcp run server.py:mcp --transport http --port 8000\n")
+    
+    # Jika Anda ingin tetap menjalankan 'python server.py', gunakan mcp.run()
+    # dan pastikan Anda menginstal CLI FastMCP.
     mcp.run()
