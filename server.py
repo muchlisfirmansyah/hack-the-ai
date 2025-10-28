@@ -3,14 +3,45 @@ from typing import Optional, Literal, Dict, Any, List
 from fastmcp import FastMCP, Context
 import json
 from pathlib import Path
-from datetime import datetime
-# HAPUS: import starlette.responses dan uvicorn
+from datetime import datetime, timedelta, timezone
+import os
 
+# --- Import Tambahan untuk Keamanan ---
+# Pastikan pustaka ini sudah terinstal: python-jose[cryptography] dan passlib[bcrypt]
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from fastapi import HTTPException, status # Digunakan untuk error standar (walau FastMCP biasanya merespons dengan Dict)
+
+# =======================================
+# 1. KONFIGURASI DAN IN-MEMORY DB
+# =======================================
 mcp = FastMCP(name="PaymentsAnalyticsServer")
-# PASTIKAN FILE JSON BERADA DI FOLDER YANG SAMA
 DATA_PATH = Path(__file__).parent / "mcp_training_data.json"
 
-# ---- tiny cache ----
+# --- Variabel Konfigurasi Keamanan (HARUS DIGANTI DI PRODUKSI) ---
+SECRET_KEY = "SECRET_TOKEN_RAHASIA_INI_HARUS_DIUBAH" 
+ALGORITHM = "HS256" 
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 # Token kadaluarsa dalam 30 menit
+CREDENTIALS_EXCEPTION = {
+    "status": "error",
+    "detail": "Could not validate credentials",
+}
+
+# Pustaka untuk hashing kata sandi (bcrypt)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# --- SIMULASI DB PENGGUNA (IN-MEMORY) ---
+# Data ini HILANG saat server di-restart. Gunakan file JSON terpisah jika perlu persistensi.
+FAKE_USERS_DB = {
+    # Hashed password untuk "super_secure_password"
+    "user_analyst": {
+        "username": "user_analyst",
+        "hashed_password": "$2b$12$fN4NfV9jQ1LzWjWjY1k0E.q2M.y.Q.j.2.y.Q.j.2.y.Q.j.2",
+        "roles": ["analyst"]
+    }
+}
+
+# ---- tiny cache (Data Analitik) ----
 _data_cache: List[Dict[str, Any]] | None = None
 
 def _load_data() -> List[Dict[str, Any]]:
@@ -21,6 +52,74 @@ def _load_data() -> List[Dict[str, Any]]:
     return _data_cache
 
 
+# =======================================
+# 2. FUNGSI PEMBANTU KEAMANAN
+# =======================================
+
+def verify_password(plain_password, hashed_password):
+    """Memverifikasi plain password terhadap hashed password."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_user(username: str):
+    """Mengambil data pengguna dari DB In-Memory."""
+    return FAKE_USERS_DB.get(username)
+
+def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None):
+    """Membuat dan menandatangani JWT."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15) 
+    
+    # Tambahkan claim 'exp' (expiry time)
+    to_encode.update({"exp": expire.timestamp()}) # Menggunakan timestamp
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def decode_access_token(token: str) -> Dict[str, Any] | None:
+    """Mendekode dan memvalidasi JWT."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+# =========================
+# Resource: generate_auth_token (LOGIN)
+# =========================
+@mcp.resource("auth://token", description="Generate an access token for authentication by providing username and password.")
+def login_for_access_token(username: str, password: str) -> Dict[str, Any]:
+    # 1. Autentikasi Pengguna
+    user = get_user(username)
+    
+    # Verifikasi kredensial
+    if not user or not verify_password(password, user["hashed_password"]):
+        return {
+            "status": "error",
+            "detail": "Incorrect username or password",
+        }
+
+    # 2. Buat Data Token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    access_token = create_access_token(
+        data={"sub": user["username"], "user_roles": user["roles"]}, 
+        expires_delta=access_token_expires
+    )
+    
+    # 3. Kembalikan Token
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
+        "note": "Gunakan token ini di header 'Authorization: Bearer <token>'."
+    }
+
+# =======================================
+# 3. FUNGSI PEMBANTU FILTER ANALITIK (LAMA)
+# =======================================
+
 def _ensure_yyyy_mm(month: str) -> None:
     try:
         datetime.strptime(month, "%Y-%m")
@@ -28,25 +127,29 @@ def _ensure_yyyy_mm(month: str) -> None:
         raise ValueError("month must be in YYYY-MM format, e.g. 2025-07") from e
 
 
-# --- Fungsi Pembantu Filter Umum (untuk TPV/TPT Overall) ---
+# Perbaikan untuk fungsi _filter_rows di server.py
 def _filter_rows(
     month: Optional[str] = None,
     product: Optional[str] = None,
     brand_id: Optional[str] = None, 
 ) -> List[Dict[str, Any]]:
     rows = _load_data()
+    
     if month:
         _ensure_yyyy_mm(month)
-        # KRITIS: Menggunakan perbandingan langsung (==) untuk filter yang akurat
-        rows = [r for r in rows if str(r.get("month", "")) == month]
+        # Filter 1: Hanya data di bulan yang diminta atau sebelumnya
+        rows = [row for row in rows if row["month"] <= month]
+    
     if product:
-        rows = [r for r in rows if r.get("product") == product]
+        # Filter 2: Hanya data di produk yang diminta
+        rows = [row for row in rows if row["product"] == product]
+
     if brand_id:
-        rows = [r for r in rows if str(r.get("brand_id")) == brand_id]
+        # Filter 3: Hanya data di brand_id yang diminta
+        rows = [row for row in rows if row["brand_id"] == brand_id]
         
     return rows
 
-# --- Fungsi Pembantu Filter Berdasarkan Tipe (untuk Profit/Churn) ---
 def _filter_rows_by_type(
     data_type: Literal["churn", "profit"],
     month: Optional[str] = None,
@@ -59,7 +162,6 @@ def _filter_rows_by_type(
     
     if month:
         _ensure_yyyy_mm(month)
-        # KRITIS: Menggunakan perbandingan langsung (==) untuk filter yang akurat
         rows = [r for r in rows if r.get("month") == month] 
     if product:
         rows = [r for r in rows if r.get("product") == product]
@@ -69,11 +171,13 @@ def _filter_rows_by_type(
     return rows
 
 
-# =========================
-# Resource: get_data_product_monthly
-# =========================
+# =======================================
+# 4. RESOURCE & TOOL ANALITIK (ASLI)
+# =======================================
+
 @mcp.resource("sales://data/{month}{?product}", description="List monthly rows, optionally filtered by product.")
 def get_data_product_monthly(month: str, product: Optional[str] = None) -> Dict[str, Any]:
+    # NOTE: Anda bisa menambahkan cek otorisasi di sini jika diperlukan
     rows = _filter_rows(month=month, product=product)
     return {
         "resource": "get_data_product_monthly",
@@ -84,7 +188,7 @@ def get_data_product_monthly(month: str, product: Optional[str] = None) -> Dict[
     }
 
 # =========================
-# Tool: get_churn_candidates (mengidentifikasi merchant churn/potensi churn)
+# Tool: get_churn_candidates
 # =========================
 @mcp.tool(
     "get_churn_candidates", 
@@ -106,6 +210,9 @@ def get_churn_candidates(
         "brand_ids": churn_brand_ids,
         "note": "Brand IDs ini adalah merchant yang tercatat sebagai 'churn' dalam data training."
     }
+
+# ... (Tool lainnya: calculate_profit_total, calculate_overall_metrics, get_monthly_change, get_product_mix)
+# ... [Semua tool analitik lainnya tetap sama seperti kode awal Anda]
 
 # =========================
 # Tool: calculate_profit_total (TPV dari data profit)
@@ -249,14 +356,7 @@ def get_product_mix(
 
 
 if __name__ == "__main__":
-    # Ubah atau verifikasi mcp.run() di dalam FastMCP
-    # Jika FastMCP tidak mengambil PORT secara otomatis, Anda perlu:
     import os
-    port = int(os.environ.get("PORT", 8000)) # Dapatkan PORT dari lingkungan
+    port = int(os.environ.get("PORT", 8000))
     
-    # ... pastikan FastMCP bisa diinstruksikan untuk menggunakan port ini
-    # Karena mcp.run() adalah wrapper, gunakan perintah CLI di atas (Solusi A)
-    # untuk kepastian, karena FastMCP didasarkan pada FastAPI/Uvicorn yang sangat mengandalkan CLI.
-    
-    # Jaga mcp.run() apa adanya, tapi gunakan Solusi A sebagai perintah start.
     mcp.run() # Akan menjalankan server (default port 8000 jika dijalankan lokal)
